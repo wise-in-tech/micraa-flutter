@@ -1,30 +1,37 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
+// Basic smoke test for the real app entry point (the scaffold-generated
+// counter-app test that used to live here referenced a non-existent `MyApp`
+// class and never matched this project).
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:provider/provider.dart';
 
 import 'package:micraa_flutter/main.dart';
+import 'package:micraa_flutter/providers/app_state.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  testWidgets('app boots without crashing and settles on a screen', (tester) async {
+    await tester.pumpWidget(
+      ChangeNotifierProvider(
+        create: (_) => AppState(),
+        child: const MicraaApp(),
+      ),
+    );
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+    // While the initial login check resolves, a MaterialApp must already be
+    // showing (no crash on boot).
+    expect(find.byType(MaterialApp), findsOneWidget);
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
+    // Not pumpAndSettle(): the initial loading state renders an indeterminate
+    // CircularProgressIndicator, which animates forever and would time out
+    // "settle". A handful of timed pumps is enough for the login-check
+    // Future (backed by flutter_secure_storage, unavailable in this widget
+    // test) to resolve one way or another.
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
 
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    // Whatever the login-check outcome, the app must land on some scaffold.
+    expect(find.byType(Scaffold), findsWidgets);
   });
 }

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 import 'package:http/http.dart' as http;
 import '../config/app_config.dart';
 
@@ -8,12 +9,20 @@ class AuthService {
   static const String _userKey = 'user_data';
   static const _storage = FlutterSecureStorage();
 
+  // google_sign_in v7 must be initialized exactly once before any other call.
+  static Future<void>? _googleInit;
+
+  Future<void> _ensureGoogleInitialized() => _googleInit ??=
+      GoogleSignIn.instance.initialize(serverClientId: kGoogleServerClientId);
+
   /// Enregistrer un nouvel utilisateur
+  ///
+  /// Public registration always creates a STUDENT account (enforced backend-side);
+  /// there is no role parameter here on purpose - the client never supplies a role.
   Future<Map<String, dynamic>> register({
     required String email,
     required String password,
     required String name,
-    required String role, // 'TEACHER' ou 'STUDENT'
   }) async {
     try {
       final response = await http.post(
@@ -23,7 +32,6 @@ class AuthService {
           'email': email,
           'password': password,
           'name': name,
-          'role': role.toUpperCase(),
         }),
       );
 
@@ -140,6 +148,76 @@ class AuthService {
     }
   }
 
+  /// Connexion avec Google
+  ///
+  /// Shows the native Google account picker, then sends the resulting Google ID
+  /// token to the backend, which verifies it and returns our own JWT (same
+  /// response shape as login/register). New accounts are always STUDENT.
+  /// Returns `canceled: true` when the user closes the picker.
+  Future<Map<String, dynamic>> loginWithGoogle() async {
+    if (kGoogleServerClientId.isEmpty) {
+      return {'success': false, 'error': 'Google Sign-In is not configured'};
+    }
+
+    final String? idToken;
+    try {
+      await _ensureGoogleInitialized();
+      final account = await GoogleSignIn.instance.authenticate();
+      idToken = account.authentication.idToken;
+    } on GoogleSignInException catch (e) {
+      if (e.code == GoogleSignInExceptionCode.canceled) {
+        return {'success': false, 'canceled': true};
+      }
+      return {'success': false, 'error': 'Google Sign-In failed: ${e.description ?? e.code.name}'};
+    }
+
+    if (idToken == null) {
+      return {'success': false, 'error': 'Google Sign-In failed: no ID token'};
+    }
+
+    try {
+      final response = await http.post(
+        Uri.parse('$kApiBaseUrl/api/auth/google'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'idToken': idToken}),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final user = {
+          'userId': data['userId'],
+          'email': data['email'],
+          'name': data['name'],
+          'role': data['role'],
+        };
+
+        // Sauvegarder le token et l'utilisateur de manière sécurisée
+        await _storage.write(key: _tokenKey, value: data['token']);
+        await _storage.write(key: _userKey, value: jsonEncode(user));
+
+        return {'success': true, 'token': data['token'], 'user': user};
+      } else {
+        try {
+          final error = jsonDecode(response.body);
+          return {
+            'success': false,
+            'error': error['error'] ?? error['message'] ?? 'Google login failed: ${response.statusCode}'
+          };
+        } catch (_) {
+          return {
+            'success': false,
+            'error': 'Google login failed: ${response.statusCode} - ${response.body}'
+          };
+        }
+      }
+    } catch (e) {
+      return {
+        'success': false,
+        'error': 'Network error: $e'
+      };
+    }
+  }
+
   /// Récupérer le token JWT sauvegardé
   Future<String?> getToken() async {
     return await _storage.read(key: _tokenKey);
@@ -164,6 +242,17 @@ class AuthService {
   Future<void> logout() async {
     await _storage.delete(key: _tokenKey);
     await _storage.delete(key: _userKey);
+
+    // Forget the Google session too, so the next Google login shows the account
+    // picker instead of silently reusing the previous account.
+    if (kGoogleServerClientId.isNotEmpty) {
+      try {
+        await _ensureGoogleInitialized();
+        await GoogleSignIn.instance.signOut();
+      } catch (_) {
+        // Never block logout on Google; our own JWT is already gone.
+      }
+    }
   }
 
   /// Récupérer le rôle de l'utilisateur connecté

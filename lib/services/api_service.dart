@@ -4,16 +4,19 @@ import '../config/app_config.dart';
 import '../models/user_model.dart';
 import '../models/live_class_model.dart';
 import '../models/join_class_response.dart';
+import '../models/participant_model.dart';
 import 'auth_service.dart';
 
 class ApiService {
   // Résolu à chaque instanciation pour prendre l'IP dynamique
   final String baseUrl;
   final AuthService authService;
+  final http.Client _client;
 
-  ApiService({String? baseUrl, AuthService? authService}) 
+  ApiService({String? baseUrl, AuthService? authService, http.Client? client})
     : baseUrl = baseUrl ?? kApiBaseUrl,
-      authService = authService ?? AuthService();
+      authService = authService ?? AuthService(),
+      _client = client ?? http.Client();
 
   /// Construire les headers avec le JWT si disponible
   Future<Map<String, String>> _getHeaders() async {
@@ -35,7 +38,7 @@ class ApiService {
   Future<bool> checkHealth() async {
     try {
       final headers = await _getHeaders();
-      final res = await http
+      final res = await _client
           .get(Uri.parse('$baseUrl/api/health'), headers: headers)
           .timeout(const Duration(seconds: 5));
       return res.statusCode == 200;
@@ -44,43 +47,9 @@ class ApiService {
     }
   }
 
-  // ─── Users ─────────────────────────────────────────────
-  Future<List<UserModel>> getTeachers() async {
-    final headers = await _getHeaders();
-    final res = await http.get(
-      Uri.parse('$baseUrl/api/users/teachers'),
-      headers: headers,
-    );
-    _checkStatus(res);
-    final list = jsonDecode(res.body) as List<dynamic>;
-    return list.map((e) => UserModel.fromJson(e as Map<String, dynamic>)).toList();
-  }
-
-  Future<List<UserModel>> getStudents() async {
-    final headers = await _getHeaders();
-    final res = await http.get(
-      Uri.parse('$baseUrl/api/users/students'),
-      headers: headers,
-    );
-    _checkStatus(res);
-    final list = jsonDecode(res.body) as List<dynamic>;
-    return list.map((e) => UserModel.fromJson(e as Map<String, dynamic>)).toList();
-  }
-
-  Future<UserModel> createUser({
-    required String name,
-    required String email,
-    required String role,
-  }) async {
-    final headers = await _getHeaders();
-    final res = await http.post(
-      Uri.parse('$baseUrl/api/users'),
-      headers: headers,
-      body: jsonEncode({'name': name, 'email': email, 'role': role}),
-    );
-    _checkStatus(res);
-    return UserModel.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
-  }
+  // Note: there is no public/client-facing way to list or create TEACHER/ADMIN
+  // accounts. Teacher accounts are created backend-side only, through the
+  // ADMIN-protected "POST /api/admin/teachers" endpoint (see ticket-001).
 
   // ─── Live Classes ───────────────────────────────────────
   Future<List<LiveClassModel>> getLiveClassesForUser(UserModel user) async {
@@ -89,7 +58,7 @@ class ApiService {
         '$baseUrl/api/live-classes?userId=${user.id}&role=${user.role}';
 
     final headers = await _getHeaders();
-    final res = await http.get(Uri.parse(endpoint), headers: headers);
+    final res = await _client.get(Uri.parse(endpoint), headers: headers);
     _checkStatus(res);
     final list = jsonDecode(res.body) as List<dynamic>;
     return list
@@ -103,7 +72,7 @@ class ApiService {
     String? scheduledAt,
   }) async {
     final headers = await _getHeaders();
-    final res = await http.post(
+    final res = await _client.post(
       Uri.parse('$baseUrl/api/live-classes'),
       headers: headers,
       body: jsonEncode({
@@ -118,7 +87,7 @@ class ApiService {
 
   Future<LiveClassModel> startLiveClass(int classId, int teacherId) async {
     final headers = await _getHeaders();
-    final res = await http.post(
+    final res = await _client.post(
       Uri.parse('$baseUrl/api/live-classes/$classId/start?teacherId=$teacherId'),
       headers: headers,
     );
@@ -129,7 +98,7 @@ class ApiService {
   Future<void> addStudents(int classId, int teacherId, List<int> studentIds) async {
     // POST /api/live-classes/{id}/students  (body: studentIds)
     final headers = await _getHeaders();
-    final res = await http.post(
+    final res = await _client.post(
       Uri.parse('$baseUrl/api/live-classes/$classId/students'),
       headers: headers,
       body: jsonEncode({'studentIds': studentIds}),
@@ -139,7 +108,7 @@ class ApiService {
 
   Future<JoinClassResponse> joinLiveClass(int classId, int userId) async {
     final headers = await _getHeaders();
-    final res = await http.post(
+    final res = await _client.post(
       Uri.parse('$baseUrl/api/live-classes/$classId/join?userId=$userId'),
       headers: headers,
     );
@@ -150,12 +119,47 @@ class ApiService {
 
   Future<LiveClassModel> endLiveClass(int classId, int teacherId) async {
     final headers = await _getHeaders();
-    final res = await http.post(
+    final res = await _client.post(
       Uri.parse('$baseUrl/api/live-classes/$classId/end?teacherId=$teacherId'),
       headers: headers,
     );
     _checkStatus(res);
     return LiveClassModel.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+  }
+
+  // ─── Participants & microphone moderation (teacher only) ────────────────
+  // The caller's identity/authorization is enforced backend-side from the JWT,
+  // not from anything passed here.
+
+  Future<List<ParticipantModel>> getParticipants(int classId) async {
+    final headers = await _getHeaders();
+    final res = await _client.get(
+      Uri.parse('$baseUrl/api/live-classes/$classId/participants'),
+      headers: headers,
+    );
+    _checkStatus(res);
+    final list = jsonDecode(res.body) as List<dynamic>;
+    return list
+        .map((e) => ParticipantModel.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<void> muteParticipant(int classId, int participantId) async {
+    final headers = await _getHeaders();
+    final res = await _client.post(
+      Uri.parse('$baseUrl/api/live-classes/$classId/participants/$participantId/mute'),
+      headers: headers,
+    );
+    _checkStatus(res);
+  }
+
+  Future<void> unmuteParticipant(int classId, int participantId) async {
+    final headers = await _getHeaders();
+    final res = await _client.post(
+      Uri.parse('$baseUrl/api/live-classes/$classId/participants/$participantId/unmute'),
+      headers: headers,
+    );
+    _checkStatus(res);
   }
 
   // ─── Helpers ───────────────────────────────────────────

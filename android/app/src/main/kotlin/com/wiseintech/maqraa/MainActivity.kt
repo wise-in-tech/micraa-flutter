@@ -1,4 +1,4 @@
-package com.wiseintech.micraa_flutter
+package com.wiseintech.maqraa
 
 import io.flutter.embedding.android.FlutterActivity
 

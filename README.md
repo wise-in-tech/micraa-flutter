@@ -76,3 +76,23 @@ flutter run
 | `kLiveKitUrl` | `ws://localhost:7880` | `ws://192.168.x.x:7880` |
 
 Modifier dans `lib/config/app_config.dart`.
+
+## Publier sur Google Play (Android)
+
+Une version destinée à Google Play doit être signée avec une clé release, jamais avec la clé debug.
+
+1. Créer une clé de téléversement et conserver le fichier `.jks` en lieu sûr :
+
+```bash
+keytool -genkey -v -keystore android/app/upload-keystore.jks -keyalg RSA -keysize 2048 -validity 10000 -alias micraa
+```
+
+2. Créer `android/key.properties` à partir de `android/key.properties.example`, puis renseigner les mots de passe, l’alias et le chemin absolu vers `upload-keystore.jks`. Ce fichier et la clé ne doivent jamais être commités; sauvegardez-les de façon sécurisée.
+
+3. Générer le bundle à importer dans Play Console :
+
+```bash
+flutter build appbundle --release
+```
+
+Le fichier généré se trouve dans `build/app/outputs/bundle/release/app-release.aab`. Pour mettre à jour une application existante, utilisez la même clé de téléversement que pour les versions précédentes.

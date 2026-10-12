@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:livekit_client/livekit_client.dart';
@@ -5,19 +7,24 @@ import 'package:permission_handler/permission_handler.dart';
 import '../models/live_class_model.dart';
 import '../models/join_class_response.dart';
 import '../models/user_model.dart';
+import '../models/participant_model.dart';
 import '../services/livekit_service.dart';
+import '../services/api_service.dart';
+import '../widgets/participants_panel.dart';
 import '../config/app_config.dart';
 
 class LiveRoomScreen extends StatefulWidget {
   final LiveClassModel liveClass;
   final JoinClassResponse joinResponse;
   final UserModel currentUser;
+  final ApiService? apiService;
 
   const LiveRoomScreen({
     super.key,
     required this.liveClass,
     required this.joinResponse,
     required this.currentUser,
+    this.apiService,
   });
 
   @override
@@ -26,10 +33,19 @@ class LiveRoomScreen extends StatefulWidget {
 
 class _LiveRoomScreenState extends State<LiveRoomScreen> {
   final LiveClassRoomService _roomService = LiveClassRoomService();
+  late final ApiService _apiService = widget.apiService ?? ApiService();
   bool _isConnecting = true;
   String? _connectError;
   Duration _elapsed = Duration.zero;
   late final Stopwatch _stopwatch;
+
+  // Teacher-only: backend-provided, ordered participant roster + moderation.
+  List<ParticipantModel> _participants = [];
+  String? _participantsError;
+  Timer? _participantsPollTimer;
+  final Set<int> _pendingMicActions = {};
+
+  bool get _isTeacher => widget.currentUser.isTeacher;
 
   @override
   void initState() {
@@ -44,6 +60,13 @@ class _LiveRoomScreenState extends State<LiveRoomScreen> {
       setState(() => _elapsed = _stopwatch.elapsed);
       return mounted;
     });
+
+    if (_isTeacher) {
+      _roomService.onParticipantsChanged = _refreshParticipants;
+      _refreshParticipants();
+      _participantsPollTimer =
+          Timer.periodic(const Duration(seconds: 5), (_) => _refreshParticipants());
+    }
   }
 
   void _onRoomUpdate() => setState(() {});
@@ -55,7 +78,7 @@ class _LiveRoomScreenState extends State<LiveRoomScreen> {
       final status = await Permission.microphone.request();
       if (!status.isGranted) {
         setState(() {
-          _connectError = 'Permission microphone refusée';
+          _connectError = 'تم رفض إذن الميكروفون';
           _isConnecting = false;
         });
         return;
@@ -81,6 +104,45 @@ class _LiveRoomScreenState extends State<LiveRoomScreen> {
     }
   }
 
+  Future<void> _refreshParticipants() async {
+    try {
+      final participants = await _apiService.getParticipants(widget.liveClass.id);
+      if (!mounted) return;
+      setState(() {
+        _participants = participants;
+        _participantsError = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _participantsError = e.toString());
+    }
+  }
+
+  Future<void> _toggleParticipantMic(ParticipantModel participant) async {
+    final userId = participant.userId;
+    if (userId == null || _pendingMicActions.contains(userId)) return;
+
+    setState(() => _pendingMicActions.add(userId));
+    try {
+      if (participant.microphoneMuted) {
+        await _apiService.unmuteParticipant(widget.liveClass.id, userId);
+      } else {
+        await _apiService.muteParticipant(widget.liveClass.id, userId);
+      }
+      await _refreshParticipants();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('خطأ في الميكروفون: $e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _pendingMicActions.remove(userId));
+      }
+    }
+  }
+
   String _formatDuration(Duration d) {
     final h = d.inHours.toString().padLeft(2, '0');
     final m = (d.inMinutes % 60).toString().padLeft(2, '0');
@@ -88,17 +150,24 @@ class _LiveRoomScreenState extends State<LiveRoomScreen> {
     return h == '00' ? '$m:$s' : '$h:$m:$s';
   }
 
+  Future<void> _leaveRoom() async {
+    await _roomService.disconnect();
+    if (context.mounted) Navigator.of(context).pop();
+  }
+
   @override
   Widget build(BuildContext context) {
-    return WillPopScope(
-      onWillPop: () async {
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (didPop) return;
         await _roomService.disconnect();
-        return true;
+        if (context.mounted) Navigator.of(context).pop();
       },
       child: Scaffold(
-        backgroundColor: const Color(0xFF121212),
+        backgroundColor: const Color(kBackgroundColor),
         appBar: AppBar(
-          backgroundColor: const Color(0xFF1E1E1E),
+          backgroundColor: const Color(kSurfaceColor),
           foregroundColor: Colors.white,
           title: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -109,18 +178,14 @@ class _LiveRoomScreenState extends State<LiveRoomScreen> {
               ),
               if (_roomService.isConnected)
                 Text(
-                  '🔴 EN DIRECT  ${_formatDuration(_elapsed)}',
+                  '🔴 جارية الآن  ${_formatDuration(_elapsed)}',
                   style: const TextStyle(fontSize: 11, color: Color(kSuccessColor)),
                 ),
             ],
           ),
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back),
-            onPressed: () async {
-              await _roomService.disconnect();
-              if (context.mounted) Navigator.of(context).pop();
-            },
-          ),
+          // No custom `leading`: the AppBar's automatic back button already
+          // calls Navigator.maybePop(), which the PopScope above intercepts -
+          // and it renders the correctly RTL-mirrored arrow automatically.
         ),
         body: _buildBody(),
         bottomNavigationBar: _roomService.isConnected ? _buildControls() : null,
@@ -136,7 +201,7 @@ class _LiveRoomScreenState extends State<LiveRoomScreen> {
           children: [
             CircularProgressIndicator(color: Colors.white),
             SizedBox(height: 20),
-            Text('Connexion à la session audio...', style: TextStyle(color: Colors.white70)),
+            Text('جارٍ الاتصال بجلسة الصوت...', style: TextStyle(color: Colors.white70)),
           ],
         ),
       );
@@ -152,7 +217,7 @@ class _LiveRoomScreenState extends State<LiveRoomScreen> {
               const Icon(Icons.error_outline, size: 64, color: Color(kDangerColor)),
               const SizedBox(height: 16),
               const Text(
-                'Impossible de rejoindre la session',
+                'تعذّر الانضمام إلى الجلسة',
                 style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 8),
@@ -168,7 +233,7 @@ class _LiveRoomScreenState extends State<LiveRoomScreen> {
                   _connect();
                 },
                 icon: const Icon(Icons.refresh),
-                label: const Text('Réessayer'),
+                label: const Text('إعادة المحاولة'),
               ),
             ],
           ),
@@ -183,7 +248,7 @@ class _LiveRoomScreenState extends State<LiveRoomScreen> {
         Container(
           width: double.infinity,
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-          color: const Color(0xFF1E1E1E),
+          color: const Color(kSurfaceColor),
           child: Row(
             children: [
               const Icon(Icons.meeting_room, color: Colors.white54, size: 16),
@@ -195,6 +260,14 @@ class _LiveRoomScreenState extends State<LiveRoomScreen> {
             ],
           ),
         ),
+
+        if (_isTeacher)
+          ParticipantsPanel(
+            participants: _participants,
+            errorMessage: _participantsError,
+            pendingMicActions: _pendingMicActions,
+            onToggleMic: _toggleParticipantMic,
+          ),
 
         // Participants
         Expanded(
@@ -210,28 +283,38 @@ class _LiveRoomScreenState extends State<LiveRoomScreen> {
 
   Widget _buildControls() => Container(
         padding: const EdgeInsets.all(20),
-        color: const Color(0xFF1E1E1E),
+        color: const Color(kSurfaceColor),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
           children: [
-            // Mute/Unmute
+            // كتم/تفعيل الميكروفون
             _ControlButton(
-              icon: _roomService.isMicEnabled ? Icons.mic : Icons.mic_off,
-              label: _roomService.isMicEnabled ? 'Micro ON' : 'Micro OFF',
-              color: _roomService.isMicEnabled
-                  ? const Color(kSuccessColor)
-                  : const Color(kDangerColor),
-              onPressed: () => _roomService.toggleMic(),
+              icon: _roomService.isForceMuted
+                  ? Icons.mic_off
+                  : (_roomService.isMicEnabled ? Icons.mic : Icons.mic_off),
+              label: _roomService.isForceMuted
+                  ? 'كتمه المعلم'
+                  : (_roomService.isMicEnabled ? 'الميكروفون يعمل' : 'الميكروفون مغلق'),
+              color: _roomService.isForceMuted
+                  ? Colors.grey
+                  : (_roomService.isMicEnabled
+                      ? const Color(kSuccessColor)
+                      : const Color(kDangerColor)),
+              onPressed: _roomService.isForceMuted
+                  ? () => ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text(
+                              'قام المعلم بكتم ميكروفونك، ولا يمكن إعادة تفعيله محليًا.'),
+                        ),
+                      )
+                  : () => _roomService.toggleMic(),
             ),
-            // Quitter
+            // مغادرة
             _ControlButton(
               icon: Icons.call_end,
-              label: 'Quitter',
+              label: 'مغادرة',
               color: const Color(kDangerColor),
-              onPressed: () async {
-                await _roomService.disconnect();
-                if (context.mounted) Navigator.of(context).pop();
-              },
+              onPressed: _leaveRoom,
             ),
           ],
         ),
@@ -239,6 +322,8 @@ class _LiveRoomScreenState extends State<LiveRoomScreen> {
 
   @override
   void dispose() {
+    _participantsPollTimer?.cancel();
+    _roomService.onParticipantsChanged = null;
     _roomService.removeListener(_onRoomUpdate);
     _roomService.dispose();
     super.dispose();
@@ -261,14 +346,14 @@ class _ParticipantsGrid extends StatelessWidget {
   Widget build(BuildContext context) {
     final all = <Widget>[
       _ParticipantTile(
-        name: '${localUser.name} (Moi)',
+        name: '${localUser.name} (أنا)',
         isLocal: true,
         isSpeaking: false,
         micEnabled: localMicEnabled,
       ),
       ...remoteParticipants.map(
         (p) => _ParticipantTile(
-          name: p.name ?? p.identity,
+          name: p.name.isNotEmpty ? p.name : p.identity,
           isLocal: false,
           isSpeaking: p.isSpeaking,
           micEnabled: !(p.isMuted),
@@ -308,7 +393,7 @@ class _ParticipantTile extends StatelessWidget {
     return AnimatedContainer(
       duration: const Duration(milliseconds: 200),
       decoration: BoxDecoration(
-        color: const Color(0xFF2C2C2C),
+        color: const Color(kSurfaceVariantColor),
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
           color: isSpeaking
@@ -335,7 +420,7 @@ class _ParticipantTile extends StatelessWidget {
                       : const Color(kAccentColor),
                   boxShadow: isSpeaking
                       ? [BoxShadow(
-                          color: const Color(kSuccessColor).withOpacity(0.5),
+                          color: const Color(kSuccessColor).withValues(alpha: 0.5),
                           blurRadius: 12,
                           spreadRadius: 4,
                         )]
@@ -357,7 +442,7 @@ class _ParticipantTile extends StatelessWidget {
                 padding: const EdgeInsets.all(4),
                 decoration: const BoxDecoration(
                   shape: BoxShape.circle,
-                  color: Color(0xFF1E1E1E),
+                  color: Color(kSurfaceColor),
                 ),
                 child: Icon(
                   micEnabled ? Icons.mic : Icons.mic_off,
@@ -384,7 +469,7 @@ class _ParticipantTile extends StatelessWidget {
           if (isSpeaking) ...[
             const SizedBox(height: 4),
             const Text(
-              '🎙 parle...',
+              '🎙 يتحدث الآن...',
               style: TextStyle(color: Color(kSuccessColor), fontSize: 11),
             ),
           ],
@@ -419,7 +504,7 @@ class _ControlButton extends StatelessWidget {
               height: 64,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: color.withOpacity(0.15),
+                color: color.withValues(alpha: 0.15),
                 border: Border.all(color: color, width: 2),
               ),
               child: Icon(icon, color: color, size: 28),

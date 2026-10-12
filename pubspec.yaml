@@ -1,6 +1,6 @@
 name: micraa_flutter
 description: Micraa - Live Classroom Audio App
-version: 1.0.0+1
+version: 1.0.0+2
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -8,6 +8,10 @@ environment:
 
 dependencies:
   flutter:
+    sdk: flutter
+
+  # Arabic + RTL support (Material/Widgets/Cupertino locale delegates)
+  flutter_localizations:
     sdk: flutter
 
   # HTTP client pour l'API REST
@@ -29,10 +33,20 @@ dependencies:
   # Secure storage for JWT
   flutter_secure_storage: ^9.0.0
 
+  # Keep the screen awake while the live-room screen is active
+  wakelock_plus: ^1.2.8
+
+  # Surface livekit_client's own diagnostic logs (silent by default) to
+  # `adb logcat` / the console, for diagnosing connection issues in the field.
+  logging: ^1.2.0
+  google_sign_in: ^7.2.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^3.0.0
+  # Used directly in tests to fake the wakelock platform channel.
+  wakelock_plus_platform_interface: ^1.7.0
 
 flutter:
   uses-material-design: true

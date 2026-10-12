@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:logging/logging.dart';
 import 'package:provider/provider.dart';
 import 'providers/app_state.dart';
 import 'screens/classes_screen.dart';
@@ -8,6 +10,17 @@ import 'models/user_model.dart';
 import 'config/app_config.dart';
 
 void main() {
+  // livekit_client (and our own services) log via package:logging, which is
+  // silent unless something listens. Wiring it to debugPrint makes those
+  // messages show up in `adb logcat` (device logs, incl. release builds
+  // installed via `adb install`), which is essential for diagnosing a stuck
+  // "connecting to the audio session" state in the field.
+  Logger.root.level = Level.ALL;
+  Logger.root.onRecord.listen((record) {
+    final error = record.error != null ? ' | error: ${record.error}' : '';
+    debugPrint('[${record.level.name}] ${record.loggerName}: ${record.message}$error');
+  });
+
   runApp(
     ChangeNotifierProvider(
       create: (_) => AppState(),
@@ -74,17 +87,28 @@ class _MicraaAppState extends State<MicraaApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Micraa',
+      title: 'مقرأة',
       debugShowCheckedModeBanner: false,
+      // Arabic UI, RTL layout throughout (matches ticket: full Arabic + RTL).
+      locale: const Locale('ar'),
+      supportedLocales: const [Locale('ar')],
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
           seedColor: const Color(kPrimaryColor),
-          brightness: Brightness.light,
+          brightness: Brightness.dark,
+          surface: const Color(kSurfaceColor),
         ),
+        scaffoldBackgroundColor: const Color(kBackgroundColor),
         useMaterial3: true,
         cardTheme: CardThemeData(
-          elevation: 2,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          color: const Color(kSurfaceColor),
+          elevation: 0,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
         ),
         elevatedButtonTheme: ElevatedButtonThemeData(
           style: ElevatedButton.styleFrom(
@@ -93,6 +117,15 @@ class _MicraaAppState extends State<MicraaApp> {
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
           ),
         ),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Color(kSurfaceColor),
+          foregroundColor: Color(kTextPrimaryColor),
+          elevation: 0,
+        ),
+        textTheme: ThemeData.dark().textTheme.apply(
+              bodyColor: const Color(kTextPrimaryColor),
+              displayColor: const Color(kTextPrimaryColor),
+            ),
       ),
       home: FutureBuilder<UserModel?>(
         future: _initialUser,

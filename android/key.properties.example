@@ -1,0 +1,6 @@
+# Copy this file to key.properties (same folder) and fill in your real values.
+# key.properties is git-ignored - never commit your real passwords/keystore.
+storePassword=WISEtech
+keyPassword=WISEtech
+keyAlias=micraa
+storeFile=/Users/yourname/micraa-release-key.jks
